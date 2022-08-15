@@ -402,5 +402,51 @@ length(de_cardiomyopathy$cluster_id2[de_cardiomyopathy$FDR < 0.05 & de_cardiomyo
 ```
 
 
+Failing Atrium groups
+
+```{r}
+bad_samples <- c("AA25514", "AA23683", "AA24806", "AA24941", "AA23819", "AA24899", "AA24870", "AA25314", "AA23996","AA24205")
+good_samples <- c("AA25197", "AA24132", "AA24852", "AA25216", "AA25002")
+failing_atrium_repro <- metadata$id[ gsub(".*_", "",  metadata$id) %in%  bad_samples]
+failing_atrium_control <- metadata$id[ gsub(".*_", "",  metadata$id) %in%  good_samples]
+failing_ventricle_samples <- metadata$id[metadata$heart %in% c("LV", "RV") & metadata$group == "failing"]
+healthy_ventricle_samples <- metadata$id[metadata$heart %in% c("LV", "RV") & metadata$group == "healthy"]
+healthy_atrium_samples <- metadata$id[metadata$heart %in% c("LA", "RA", "RA-sSAN", "RA-iSAN") & metadata$group == "healthy"]
+metadata$group_2 <- "group_2"
+metadata$group_2[metadata$id %in% failing_atrium_control] <- "failing_atrium_control"
+metadata$group_2[metadata$id %in% failing_atrium_repro] <- "failing_atrium_repro"
+metadata$group_2[metadata$id %in% failing_ventricle_samples] <- "failing_ventricle"
+metadata$group_2[metadata$id %in% healthy_atrium_samples] <- "healthy_atrium"
+metadata$group_2[metadata$id %in% healthy_ventricle_samples] <- "healthy_ventricle"
+table(metadata$group_2)
+```
+
+```{r}
+group <- as.factor(metadata$group_2)
+design <- model.matrix(~0+group)
+c <- DGEList(counts = exp_tab, genes = annotation[,c(8, 10, 13)], group = group)
+c <- calcNormFactors(c, method = "TMM")
+c <- estimateGLMTrendedDisp(c,design)
+c <- estimateGLMTagwiseDisp(c, design)
+fit <- glmFit(c, design)
+```
+
+DE for failing atrium groups
+```{r}
+m<-rep(0,ncol(design))
+aa<-grep("failing_atrium_control", colnames(design))
+vv<-grep("failing_atrium_repro", colnames(design))
+m[aa]<- -1 ### control
+m[vv]<- 1 ## experiment
+colnames(design)
+m
+lrt <- glmLRT(fit, contrast = m)
+topTags(lrt, n=nrow(lrt$table))->sorted
+```
+
+```{r}
+head(sorted$table)
+```
+
 # End
 
