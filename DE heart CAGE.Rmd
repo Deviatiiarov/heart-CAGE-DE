@@ -1,0 +1,406 @@
+
+Differential expression for heart CAGE
+```{r}
+options(java.parameters = c("-XX:+UseConcMarkSweepGC", "-Xmx8192m"))
+library(xlsx)
+
+library(edgeR)
+library(scales)
+library(factoextra)
+library(RColorBrewer)
+
+library(ggplot2)
+library(ggrepel)
+```
+
+
+reading metadata table - Supplementary Table 1 
+```{r}
+metadata<-read.xlsx2("./Supplementary Table 1 - Donor demographics, sample stats.xlsx",sheetIndex =  2, header=TRUE, startRow = 2)
+head(metadata)
+```
+
+reading expression table - available from GEO GSE150736
+```{r}
+exp_tab <- read.table("./rDPI and Enh expression (batch corrected) table.txt", header = T, sep='\t', quote = "", fill = T)
+
+# all columns are ok
+all(colnames(exp_tab) == metadata$id)
+```
+
+reading annotation table
+```{r}
+annotation<-read.xlsx2("./Supplementary Table 2 - Clusters annotation, classification.xlsx",sheetIndex =  1, header=TRUE, startRow = 57)
+
+# keep non-overlapping TRE
+annotation <- annotation[annotation$cluster_id2 %in% rownames(exp_tab), ]
+all(annotation$cluster_id2 == rownames(exp_tab))
+```
+TRE in promoters / enhancers
+```{r}
+cons_class <- gsub(".*_", "", annotation$consensus_cluster_id)
+promoter_tre <- annotation$cluster_id2[cons_class == "promoter"]
+enhancer_tre <- annotation$cluster_id2[cons_class == "enhancer"]
+```
+
+Design matrix - healthy vs failing, atrium and ventricle
+```{r}
+group<-as.factor(paste(metadata$group, gsub("S", "A", substr(metadata$heart, 2,2)), sep="_"))
+design <- model.matrix(~0+group)
+levels(group)
+```
+DE for healthy/failing ventricle/atrium
+```{r}
+c <- DGEList(counts = exp_tab, genes = annotation[,c(8,13,10)], group = group)
+c <- calcNormFactors(c, method = "TMM")
+c <- estimateCommonDisp(c)
+c <- estimateTagwiseDisp(c)
+norm_counts.table <- t(t(c$pseudo.counts)*(c$samples$norm.factors))
+```
+
+PCA
+```{r}
+res.pca <-prcomp(t(log2(norm_counts.table+1)), scale = F)
+p5<-fviz_pca_ind(res.pca,
+                 habillage = group,
+                 geom = c("point"),  
+                 title = "PCA",
+                 addEllipses = TRUE,
+                 show.legend = T,
+                 ellipse.level=0.50,
+                 palette = NULL,
+                 repel = T    
+)
+```
+
+```{r fig.height=3,fig.width=3}
+p5
+```
+
+GLM
+```{r}
+c <- estimateGLMTrendedDisp(c,design)
+c <- estimateGLMTagwiseDisp(c,design)
+fit <- glmFit(c, design)
+```
+
+DE ventricle
+```{r}
+m<-rep(0,ncol(design))
+aa<-grep("healthy_V", colnames(design))
+vv<-grep("failing_V", colnames(design))
+m[aa]<- -1/length(aa) ### control
+m[vv]<- 1/length(vv) ## experiment
+m
+lrt <- glmLRT(fit, contrast = m)
+topTags(lrt, n=nrow(lrt$table))->sorted
+```
+
+Table for Volcano plot
+```{r}
+sorted$table->de_ventricle
+de_ventricle$logP <- -log10(de_ventricle$PValue)
+de_ventricle$col <- "black"
+de_ventricle$col[de_ventricle$FDR < 0.05 & de_ventricle$logFC > 1] <- "#E31D1E"
+de_ventricle$col[de_ventricle$FDR < 0.05 & de_ventricle$logFC < -1] <- "#35A037"
+n_genes <- 8
+de_ventricle$labels <- ""
+de_ventricle <- de_ventricle[-grep("^MT-", de_ventricle$GeneName), ]
+de_ventricle <- de_ventricle[order(de_ventricle$logFC * de_ventricle$logP, decreasing = T), ]
+de_ventricle$labels[de_ventricle$GeneName!="" & !duplicated(de_ventricle$GeneName)][1:n_genes] <- de_ventricle$GeneName[de_ventricle$GeneName!="" & !duplicated(de_ventricle$GeneName)][1:n_genes]
+de_ventricle <- de_ventricle[order(de_ventricle$logFC * de_ventricle$logP, decreasing = F), ]
+de_ventricle$labels[de_ventricle$GeneName!="" & !duplicated(de_ventricle$GeneName)][1:n_genes] <- de_ventricle$GeneName[de_ventricle$GeneName!="" & !duplicated(de_ventricle$GeneName)][1:n_genes]
+head(de_ventricle)
+```
+Volcano plot
+```{r  fig.height=5,fig.width=5}
+ma <- ggplot(data = de_ventricle, aes(y = logP , x = logFC)) +   geom_point(colour=de_ventricle$col) + theme_light()   + geom_vline(xintercept=c(-1,1), linetype="dashed", color = "gold")  +  geom_label_repel(aes(label=labels),  data=de_ventricle,max.overlaps = 5000, label.size = NA,  fill=NA)
+ma
+```
+
+```{r}
+pdf("./Volcano - Ventricle DE.pdf", height = 4, width = 4)
+ma
+dev.off()
+```
+
+
+
+
+Ventricle counts
+```{r}
+# healthy all tre / promoters / enhancers
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC > 1])
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC > 1 & de_ventricle$cluster_id2 %in% promoter_tre])
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC > 1 & de_ventricle$cluster_id2 %in% enhancer_tre])
+
+# failing all tre / promoters / enhancers
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC < -1])
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC < -1 & de_ventricle$cluster_id2 %in% promoter_tre])
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC < -1 & de_ventricle$cluster_id2 %in% enhancer_tre])
+```
+
+
+DE atrium
+```{r}
+m<-rep(0,ncol(design))
+aa<-grep("healthy_A", colnames(design))
+vv<-grep("failing_A", colnames(design))
+m[aa]<- -1/length(aa) ### control
+m[vv]<- 1/length(vv) ## experiment
+m
+lrt <- glmLRT(fit, contrast = m)
+topTags(lrt, n=nrow(lrt$table))->sorted
+```
+
+Table for Volcano plot, atrium
+```{r}
+sorted$table->de_atrium
+de_atrium$logP <- -log10(de_atrium$PValue)
+de_atrium$col <- "black"
+de_atrium$col[de_atrium$FDR < 0.05 & de_atrium$logFC > 1] <- "#F07E1A"
+de_atrium$col[de_atrium$FDR < 0.05 & de_atrium$logFC < -1] <- "#1E79B6"
+n_genes <- 8
+de_atrium$labels <- ""
+de_atrium <- de_atrium[-grep("^MT-", de_atrium$GeneName), ]
+de_atrium <- de_atrium[order(de_atrium$logFC * de_atrium$logP, decreasing = T), ]
+de_atrium$labels[de_atrium$GeneName!="" & !duplicated(de_atrium$GeneName)][1:n_genes] <- de_atrium$GeneName[de_atrium$GeneName!="" & !duplicated(de_atrium$GeneName)][1:n_genes]
+de_atrium <- de_atrium[order(de_atrium$logFC * de_atrium$logP, decreasing = F), ]
+de_atrium$labels[de_atrium$GeneName!="" & !duplicated(de_atrium$GeneName)][1:n_genes] <- de_atrium$GeneName[de_atrium$GeneName!="" & !duplicated(de_atrium$GeneName)][1:n_genes]
+head(de_atrium)
+```
+
+Volcano plot, atrium
+```{r  fig.height=5,fig.width=5}
+ma <- ggplot(data = de_atrium, aes(y = logP , x = logFC)) +   geom_point(colour=de_atrium$col) + theme_light()   + geom_vline(xintercept=c(-1,1), linetype="dashed", color = "gold")  +  geom_label_repel(aes(label=labels),  data=de_atrium,max.overlaps = 5000, label.size = NA,  fill=NA)
+ma
+```
+
+```{r}
+pdf("./Volcano - Atrium DE.pdf", height = 4, width = 4)
+ma
+dev.off()
+```
+
+Atrium counts
+```{r}
+# healthy all tre / tre in promoters / tre in enhancers
+length(de_atrium$cluster_id2[de_atrium$FDR < 0.05 & de_atrium$logFC > 1])
+length(de_atrium$cluster_id2[de_atrium$FDR < 0.05 & de_atrium$logFC > 1 & de_atrium$cluster_id2 %in% promoter_tre])
+length(de_atrium$cluster_id2[de_atrium$FDR < 0.05 & de_atrium$logFC > 1 & de_atrium$cluster_id2 %in% enhancer_tre])
+
+# failing all tre / tre in promoters / tre in enhancers
+length(de_atrium$cluster_id2[de_atrium$FDR < 0.05 & de_atrium$logFC < -1])
+length(de_atrium$cluster_id2[de_atrium$FDR < 0.05 & de_atrium$logFC < -1 & de_atrium$cluster_id2 %in% promoter_tre])
+length(de_atrium$cluster_id2[de_atrium$FDR < 0.05 & de_atrium$logFC < -1 & de_atrium$cluster_id2 %in% enhancer_tre])
+```
+
+
+
+DE healthy ventricle vs atrium
+```{r}
+m<-rep(0,ncol(design))
+aa<-grep("healthy_V", colnames(design))
+vv<-grep("healthy_A", colnames(design))
+m[aa]<- -1/length(aa) ### control
+m[vv]<- 1/length(vv) ## experiment
+m
+lrt <- glmLRT(fit, contrast = m)
+topTags(lrt, n=nrow(lrt$table))->sorted
+```
+
+Table for Volcano plot
+```{r}
+sorted$table->de_healthy
+de_healthy$logP <- -log10(de_healthy$PValue)
+de_healthy$col <- "black"
+de_healthy$col[de_healthy$FDR < 0.05 & de_healthy$logFC > 1] <- "#1E79B6" # healthy atrium
+de_healthy$col[de_healthy$FDR < 0.05 & de_healthy$logFC < -1] <- "#35A037"# healthy ventricle
+n_genes <- 8
+de_healthy$labels <- ""
+de_healthy <- de_healthy[-grep("^MT-", de_healthy$GeneName), ]
+de_healthy <- de_healthy[order(de_healthy$logFC * de_healthy$logP, decreasing = T), ]
+de_healthy$labels[de_healthy$GeneName!="" & !duplicated(de_healthy$GeneName)][1:n_genes] <- de_healthy$GeneName[de_healthy$GeneName!="" & !duplicated(de_healthy$GeneName)][1:n_genes]
+de_healthy <- de_healthy[order(de_healthy$logFC * de_healthy$logP, decreasing = F), ]
+de_healthy$labels[de_healthy$GeneName!="" & !duplicated(de_healthy$GeneName)][1:n_genes] <- de_healthy$GeneName[de_healthy$GeneName!="" & !duplicated(de_healthy$GeneName)][1:n_genes]
+head(de_healthy)
+```
+Volcano plot
+```{r  fig.height=5,fig.width=5}
+ma <- ggplot(data = de_healthy, aes(y = logP , x = logFC)) +   geom_point(colour=de_healthy$col) + theme_light()   + geom_vline(xintercept=c(-1,1), linetype="dashed", color = "gold")  +  geom_label_repel(aes(label=labels),  data=de_healthy,max.overlaps = 5000, label.size = NA,  fill=NA)
+ma
+```
+
+```{r}
+pdf("./Volcano - Healthy DE.pdf", height = 4, width = 4)
+ma
+dev.off()
+```
+
+
+Healthy ventricle vs atrium counts
+```{r}
+# Atrium  all tre / promoters / enhancers
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC > 1])
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC > 1 & de_ventricle$cluster_id2 %in% promoter_tre])
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC > 1 & de_ventricle$cluster_id2 %in% enhancer_tre])
+
+# Ventricle all tre / promoters / enhancers
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC < -1])
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC < -1 & de_ventricle$cluster_id2 %in% promoter_tre])
+length(de_ventricle$cluster_id2[de_ventricle$FDR < 0.05 & de_ventricle$logFC < -1 & de_ventricle$cluster_id2 %in% enhancer_tre])
+```
+
+
+design for left-right comparison
+```{r}
+side <- rep(NA, length(metadata$id))
+side[metadata$heart %in% c("LA", "LV")] <- "left"
+side[metadata$heart %in% c("RA", "RV", "RA-sSAN", "RA-iSAN")] <- "right"
+table(side)
+group <- as.factor(paste(side, metadata$group))
+design <- model.matrix(~0+group)
+levels(group)
+```
+
+DE left-right, normalization
+```{r}
+c <- DGEList(counts = exp_tab, genes = annotation[,c(8, 10, 13)], group = group) 
+c <- calcNormFactors(c, method = "TMM")
+c <- estimateGLMTrendedDisp(c,design)
+c <- estimateGLMTagwiseDisp(c, design)
+fit <- glmFit(c, design)
+```
+
+DE left-right
+```{r}
+m<-rep(0,ncol(design))
+aa<-grep("left healthy", colnames(design))
+vv<-grep("right healthy", colnames(design))
+m[aa]<- -1/length(aa) ### control
+m[vv]<- 1/length(vv) ## experiment
+m
+lrt <- glmLRT(fit, contrast = m)
+topTags(lrt, n=nrow(lrt$table))->sorted
+```
+
+Table for Volcano plot
+```{r}
+sorted$table->de_side
+de_side$logP <- -log10(de_side$PValue)
+de_side$col <- "black"
+de_side$col[de_side$FDR < 0.05 & de_side$logFC > 1] <- "#734AA0" # Right
+de_side$col[de_side$FDR < 0.05 & de_side$logFC < -1] <- "#B15928"# Left
+n_genes <- 8
+de_side$labels <- ""
+de_side <- de_side[-grep("^MT-", de_side$GeneName), ]
+de_side <- de_side[order(de_side$logFC * de_side$logP, decreasing = T), ]
+de_side$labels[de_side$GeneName!="" & !duplicated(de_side$GeneName)][1:n_genes] <- de_side$GeneName[de_side$GeneName!="" & !duplicated(de_side$GeneName)][1:n_genes]
+de_side <- de_side[order(de_side$logFC * de_side$logP, decreasing = F), ]
+de_side$labels[de_side$GeneName!="" & !duplicated(de_side$GeneName)][1:n_genes] <- de_side$GeneName[de_side$GeneName!="" & !duplicated(de_side$GeneName)][1:n_genes]
+head(de_side)
+```
+
+Volcano plot
+```{r  fig.height=5,fig.width=5}
+ma <- ggplot(data = de_side, aes(y = logP , x = logFC)) +   geom_point(colour=de_side$col) + theme_light()   + geom_vline(xintercept=c(-1,1), linetype="dashed", color = "gold")  +  geom_label_repel(aes(label=labels),  data=de_side,max.overlaps = 5000, label.size = NA,  fill=NA)
+ma
+```
+
+```{r}
+pdf("./Volcano - Side DE.pdf", height = 4, width = 4)
+ma
+dev.off()
+```
+
+
+Healthy right vs left counts
+```{r}
+# Right  all tre / promoters / enhancers
+length(de_side$cluster_id2[de_side$FDR < 0.05 & de_side$logFC > 1])
+length(de_side$cluster_id2[de_side$FDR < 0.05 & de_side$logFC > 1 & de_side$cluster_id2 %in% promoter_tre])
+length(de_side$cluster_id2[de_side$FDR < 0.05 & de_side$logFC > 1 & de_side$cluster_id2 %in% enhancer_tre])
+
+# Left all tre / promoters / enhancers
+length(de_side$cluster_id2[de_side$FDR < 0.05 & de_side$logFC < -1])
+length(de_side$cluster_id2[de_side$FDR < 0.05 & de_side$logFC < -1 & de_side$cluster_id2 %in% promoter_tre])
+length(de_side$cluster_id2[de_side$FDR < 0.05 & de_side$logFC < -1 & de_side$cluster_id2 %in% enhancer_tre])
+```
+
+
+
+
+design for ICM-NICM comparison
+```{r}
+group <- as.factor(metadata$cardiomyopathy.type)
+design <- model.matrix(~0+group)
+levels(group)
+```
+
+DE ICM-NICM, normalization
+```{r}
+c <- DGEList(counts = exp_tab, genes = annotation[,c(8, 10, 13)], group = group) 
+c <- calcNormFactors(c, method = "TMM")
+c <- estimateGLMTrendedDisp(c,design)
+c <- estimateGLMTagwiseDisp(c, design)
+fit <- glmFit(c, design)
+```
+
+DE ICM-NICM
+```{r}
+m<-rep(0,ncol(design))
+aa<-grep("groupICM", colnames(design))
+vv<-grep("groupNICM", colnames(design))
+m[aa]<- -1 ### control
+m[vv]<- 1 ## experiment
+m
+lrt <- glmLRT(fit, contrast = m)
+topTags(lrt, n=nrow(lrt$table))->sorted
+```
+
+Table for Volcano plot
+```{r}
+sorted$table->de_cardiomyopathy
+de_cardiomyopathy$logP <- -log10(de_cardiomyopathy$PValue)
+de_cardiomyopathy$col <- "black"
+de_cardiomyopathy$col[de_cardiomyopathy$FDR < 0.05 & de_cardiomyopathy$logFC > 1] <- brewer.pal(9, "Set3")[3] # NICM
+de_cardiomyopathy$col[de_cardiomyopathy$FDR < 0.05 & de_cardiomyopathy$logFC < -1] <- brewer.pal(9, "Set3")[1]# ICM
+n_genes <- 8
+de_cardiomyopathy$labels <- ""
+de_cardiomyopathy <- de_cardiomyopathy[-grep("^MT-", de_cardiomyopathy$GeneName), ]
+de_cardiomyopathy <- de_cardiomyopathy[order(de_cardiomyopathy$logFC * de_cardiomyopathy$logP, decreasing = T), ]
+de_cardiomyopathy$labels[de_cardiomyopathy$GeneName!="" & !duplicated(de_cardiomyopathy$GeneName)][1:n_genes] <- de_cardiomyopathy$GeneName[de_cardiomyopathy$GeneName!="" & !duplicated(de_cardiomyopathy$GeneName)][1:n_genes]
+de_cardiomyopathy <- de_cardiomyopathy[order(de_cardiomyopathy$logFC * de_cardiomyopathy$logP, decreasing = F), ]
+de_cardiomyopathy$labels[de_cardiomyopathy$GeneName!="" & !duplicated(de_cardiomyopathy$GeneName)][1:n_genes] <- de_cardiomyopathy$GeneName[de_cardiomyopathy$GeneName!="" & !duplicated(de_cardiomyopathy$GeneName)][1:n_genes]
+head(de_cardiomyopathy)
+```
+
+Volcano plot
+```{r  fig.height=5,fig.width=5}
+ma <- ggplot(data = de_cardiomyopathy, aes(y = logP , x = logFC)) +   geom_point(colour=de_cardiomyopathy$col) + theme_light()   + geom_vline(xintercept=c(-1,1), linetype="dashed", color = "gold")  +  geom_label_repel(aes(label=labels),  data=de_cardiomyopathy,max.overlaps = 5000, label.size = NA,  fill=NA)
+ma
+```
+
+```{r}
+pdf("./Volcano - Cardiomyopathy DE.pdf", height = 4, width = 4)
+ma
+dev.off()
+```
+
+
+Cardiomyopathy NICM vs ICM counts
+```{r}
+# NICM  all tre / promoters / enhancers
+length(de_cardiomyopathy$cluster_id2[de_cardiomyopathy$FDR < 0.05 & de_cardiomyopathy$logFC > 1])
+length(de_cardiomyopathy$cluster_id2[de_cardiomyopathy$FDR < 0.05 & de_cardiomyopathy$logFC > 1 & de_cardiomyopathy$cluster_id2 %in% promoter_tre])
+length(de_cardiomyopathy$cluster_id2[de_cardiomyopathy$FDR < 0.05 & de_cardiomyopathy$logFC > 1 & de_cardiomyopathy$cluster_id2 %in% enhancer_tre])
+
+# ICM all tre / promoters / enhancers
+length(de_cardiomyopathy$cluster_id2[de_cardiomyopathy$FDR < 0.05 & de_cardiomyopathy$logFC < -1])
+length(de_cardiomyopathy$cluster_id2[de_cardiomyopathy$FDR < 0.05 & de_cardiomyopathy$logFC < -1 & de_cardiomyopathy$cluster_id2 %in% promoter_tre])
+length(de_cardiomyopathy$cluster_id2[de_cardiomyopathy$FDR < 0.05 & de_cardiomyopathy$logFC < -1 & de_cardiomyopathy$cluster_id2 %in% enhancer_tre])
+```
+
+
+# End
+
